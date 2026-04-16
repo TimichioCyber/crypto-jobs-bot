@@ -15,9 +15,9 @@ from telegram.ext import (
 )
 
 from filters import apply_filters
-from parsers.greenhouse import parse_greenhouse
-from parsers.lever import parse_lever
-from parsers.ashby import parse_ashby
+from parsers_greenhouse import parse_greenhouse
+from parsers_lever import parse_lever
+from parsers_ashby import parse_ashby
 
 load_dotenv()
 
