@@ -27,9 +27,7 @@ from db import (
     get_user_preferences,
     init_db,
     set_date_range,
-    set_default_companies_if_empty,
     set_role,
-    toggle_company,
 )
 from filters import filter_jobs
 from greenhouse_client import fetch_jobs_for_boards
@@ -59,16 +57,6 @@ def date_keyboard(current_range: str) -> InlineKeyboardMarkup:
         marker = "✅ " if days == current_range else "☐ "
         rows.append([InlineKeyboardButton(f"{marker}{label}", callback_data=f"date:{days}")])
 
-    rows.append([InlineKeyboardButton("➡️ Next: Companies", callback_data="go:companies")])
-    return InlineKeyboardMarkup(rows)
-
-
-def companies_keyboard(selected_companies: set[str]) -> InlineKeyboardMarkup:
-    rows = []
-    for token, label in GREENHOUSE_BOARDS.items():
-        marker = "✅ " if token in selected_companies else "☐ "
-        rows.append([InlineKeyboardButton(f"{marker}{label}", callback_data=f"company:{token}")])
-
     rows.append([InlineKeyboardButton("🚀 Search jobs", callback_data="run:search")])
     return InlineKeyboardMarkup(rows)
 
@@ -78,15 +66,13 @@ async def prefs_text(user_id: int) -> str:
 
     role = ROLE_LABELS.get(prefs["role"] or DEFAULT_ROLE, DEFAULT_ROLE)
     date_label = DATE_LABELS.get(prefs["date_range"] or DEFAULT_DATE_RANGE, DEFAULT_DATE_RANGE)
-
-    companies = prefs["companies"] or set(GREENHOUSE_BOARDS.keys())
-    companies_text = ", ".join(GREENHOUSE_BOARDS[c] for c in sorted(companies) if c in GREENHOUSE_BOARDS)
+    companies_count = len(GREENHOUSE_BOARDS)
 
     return (
         "Your filters:\n"
         f"• Role: {role}\n"
         f"• Date range: {date_label}\n"
-        f"• Companies: {companies_text}"
+        f"• Companies: all ({companies_count})"
     )
 
 
@@ -124,8 +110,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await ensure_user(user.id, DEFAULT_ROLE, DEFAULT_DATE_RANGE)
-    await set_default_companies_if_empty(user.id, list(GREENHOUSE_BOARDS.keys()))
-
     prefs = await get_user_preferences(user.id)
 
     await update.message.reply_text(
@@ -141,7 +125,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "/start — configure filters\n"
         "/help — show help\n\n"
-        "This version uses only Greenhouse and focuses on clean filtering."
+        "This version searches across all configured Greenhouse companies."
     )
 
 
@@ -192,38 +176,6 @@ async def on_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def go_companies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-
-    user_id = query.from_user.id
-    prefs = await get_user_preferences(user_id)
-
-    await query.edit_message_text(
-        "Choose companies.\n\n" + await prefs_text(user_id),
-        reply_markup=companies_keyboard(prefs["companies"]),
-    )
-
-
-async def on_company(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-
-    user_id = query.from_user.id
-    board_token = query.data.split(":", 1)[1]
-    await toggle_company(user_id, board_token)
-
-    prefs = await get_user_preferences(user_id)
-    await query.edit_message_text(
-        "Choose companies.\n\n" + await prefs_text(user_id),
-        reply_markup=companies_keyboard(prefs["companies"]),
-    )
-
-
 async def run_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
@@ -235,14 +187,14 @@ async def run_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     role = prefs["role"] or DEFAULT_ROLE
     date_range_raw = prefs["date_range"] or DEFAULT_DATE_RANGE
-    board_tokens = sorted(prefs["companies"]) if prefs["companies"] else list(GREENHOUSE_BOARDS.keys())
+    board_tokens = list(GREENHOUSE_BOARDS.keys())
 
     try:
         date_range_days = int(date_range_raw)
     except ValueError:
         date_range_days = 7
 
-    await query.edit_message_text("Searching jobs...")
+    await query.edit_message_text("Searching jobs across all companies...")
 
     jobs = await fetch_jobs_for_boards(board_tokens)
     filtered = filter_jobs(jobs, role, date_range_days)
@@ -287,8 +239,6 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_role, pattern=r"^role:"))
     app.add_handler(CallbackQueryHandler(go_date, pattern=r"^go:date$"))
     app.add_handler(CallbackQueryHandler(on_date, pattern=r"^date:"))
-    app.add_handler(CallbackQueryHandler(go_companies, pattern=r"^go:companies$"))
-    app.add_handler(CallbackQueryHandler(on_company, pattern=r"^company:"))
     app.add_handler(CallbackQueryHandler(run_search, pattern=r"^run:search$"))
 
     logger.info("Bot starting")
