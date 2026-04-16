@@ -1,161 +1,224 @@
-"""
-Фильтры вакансий по предпочтениям пользователя.
-"""
-import logging
-from datetime import datetime, timezone, timedelta
-from email.utils import parsedate_to_datetime
+from __future__ import annotations
 
-logger = logging.getLogger(__name__)
+from datetime import datetime, timedelta, timezone
 
-# Ключевые слова для каждой должности (EN + RU)
-POSITION_KEYWORDS = {
-    "developer": [
-        "developer", "engineer", "programmer", "software", "backend", "frontend",
-        "fullstack", "full-stack", "smart contract", "solidity", "rust", "golang",
-        "python", "typescript", "node", "blockchain", "devops", "sre", "разработ",
-        "программист", "инженер",
-    ],
-    "designer": [
-        "designer", "design", "ui", "ux", "product design", "visual", "graphic",
-        "motion", "дизайн",
-    ],
-    "content": [
-        "content", "writer", "copywriter", "editor", "journalist", "contributor",
-        "контент", "копирайтер", "редактор",
-    ],
-    "marketing": [
-        "marketing", "growth", "seo", "smm", "paid", "performance", "brand",
-        "маркет", "маркетолог",
-    ],
-    "product": [
-        "product manager", "product owner", "product lead", "head of product",
-        "продакт", "продукт",
-    ],
-    "hr": [
-        "recruiter", "hr ", "people", "talent", "head of people", "рекрут", "эйчар",
-    ],
-    "community": [
-        "community", "moderator", "ambassador", "dao", "discord", "комьюнити", "модератор",
-    ],
-    "trader": [
-        "trader", "trading", "quant", "market maker", "otc", "трейд",
-    ],
-    "analyst": [
-        "analyst", "research", "data scientist", "аналитик", "ресёрч",
-    ],
-    "bizdev": [
-        "business development", "bizdev", "bd ", "sales", "partnerships",
-        "account executive", "бизнес", "продаж",
-    ],
+from greenhouse_client import Job
+
+
+ROLE_RULES: dict[str, dict[str, list[str]]] = {
+    "developer": {
+        "include": [
+            "software engineer",
+            "backend engineer",
+            "frontend engineer",
+            "full stack",
+            "fullstack",
+            "protocol engineer",
+            "blockchain engineer",
+            "solidity",
+            "rust engineer",
+            "python engineer",
+            "data engineer",
+            "platform engineer",
+            "infrastructure engineer",
+            "devops",
+            "site reliability",
+            "sre",
+            "mobile engineer",
+            "security engineer",
+            "developer",
+        ],
+        "exclude": [
+            "sales engineer",
+            "support engineer",
+        ],
+    },
+    "product": {
+        "include": [
+            "product manager",
+            "product lead",
+            "group product manager",
+            "senior product manager",
+            "principal product manager",
+            "product owner",
+        ],
+        "exclude": [
+            "product designer",
+            "product marketing",
+        ],
+    },
+    "marketing": {
+        "include": [
+            "marketing",
+            "growth",
+            "brand",
+            "seo",
+            "crm",
+            "lifecycle",
+            "performance marketing",
+            "demand generation",
+        ],
+        "exclude": [],
+    },
+    "community": {
+        "include": [
+            "community",
+            "community manager",
+            "developer relations",
+            "devrel",
+            "ecosystem",
+            "partnerships",
+            "advocate",
+            "ambassador",
+        ],
+        "exclude": [],
+    },
+    "research": {
+        "include": [
+            "research analyst",
+            "market analyst",
+            "investment analyst",
+            "crypto analyst",
+            "researcher",
+            "onchain analyst",
+            "fundamental analyst",
+            "quant trader",
+            "quantitative trader",
+            "trader",
+            "trading",
+            "market maker",
+            "execution trader",
+        ],
+        "exclude": [
+            "transaction monitoring",
+            "audit",
+            "internal audit",
+            "compliance",
+            "fraud",
+            "trust & safety",
+            "risk analyst",
+            "kyc",
+            "aml",
+            "operations analyst",
+            "business analyst",
+            "data analyst",
+        ],
+    },
+    "design": {
+        "include": [
+            "product designer",
+            "ux designer",
+            "ui designer",
+            "visual designer",
+            "brand designer",
+            "ux researcher",
+            "staff ux researcher",
+            "design",
+        ],
+        "exclude": [],
+    },
 }
 
 
-def apply_filters(jobs: list[dict], prefs: dict) -> list[dict]:
-    """Главная функция: применяет все фильтры к списку вакансий."""
-    if not jobs:
-        return []
+def classify_role(job: Job) -> str | None:
+    text = f" {job.title} {job.description} {job.company} ".lower().strip()
+    best_role = None
+    best_score = 0
 
-    out = jobs
-    out = _filter_by_position(out, prefs.get("positions") or set())
-    out = _filter_by_format(out, prefs.get("formats") or set())
-    out = _filter_by_date(out, prefs.get("date_range", "7d"))
+    for role, rules in ROLE_RULES.items():
+        score = 0
 
-    # Сортировка по дате (свежее сверху)
-    out.sort(key=_sort_date_key, reverse=True)
-    logger.info(f"Filters: {len(jobs)} → {len(out)}")
-    return out
+        for term in rules["include"]:
+            if term in text:
+                score += 3 if " " in term else 1
 
+        for term in rules["exclude"]:
+            if term in text:
+                score -= 4
 
-def _filter_by_position(jobs: list[dict], positions: set[str]) -> list[dict]:
-    if not positions:
-        return jobs
-    keywords = []
-    for p in positions:
-        keywords.extend(POSITION_KEYWORDS.get(p, []))
-    keywords = [k.lower() for k in keywords]
+        if score > best_score:
+            best_score = score
+            best_role = role
 
-    out = []
-    for j in jobs:
-        haystack = (
-            (j.get("title", "") or "") + " " +
-            (j.get("description", "") or "")
-        ).lower()
-        if any(k in haystack for k in keywords):
-            out.append(j)
-    return out
+    return best_role if best_score > 0 else None
 
 
-def _filter_by_format(jobs: list[dict], formats: set[str]) -> list[dict]:
-    if not formats:
-        return jobs
-    fmt_map = {
-        "full_time": ["full-time", "full time"],
-        "part_time": ["part-time", "part time"],
-        "freelance": ["фриланс", "contract", "freelance"],
-        "internship": ["стажировка", "intern"],
-        "remote": ["remote"],
-    }
-    needles = []
-    for f in formats:
-        needles.extend(fmt_map.get(f, []))
+def matches_date(job: Job, date_range_days: int) -> bool:
+    if not job.posted_at:
+        return False
 
-    out = []
-    for j in jobs:
-        v = (j.get("format", "") + " " + j.get("location", "")).lower()
-        if any(n in v for n in needles):
-            out.append(j)
-    return out
+    try:
+        dt = datetime.fromisoformat(job.posted_at.replace("Z", "+00:00"))
+    except Exception:
+        return False
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=date_range_days)
+    return dt >= cutoff
 
 
-def _filter_by_date(jobs: list[dict], date_range: str) -> list[dict]:
-    if date_range == "all":
-        return jobs
-
-    days_map = {"1d": 1, "3d": 3, "7d": 7, "30d": 30}
-    days = days_map.get(date_range, 7)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
-    out = []
-    for j in jobs:
-        dt = _parse_job_date(j)
-        if dt is None:
-            # Нет даты — пропускаем через, предполагаем что свежая
-            out.append(j)
-        elif dt >= cutoff:
-            out.append(j)
-    return out
+def humanize_date(value: str) -> str:
+    if not value:
+        return "Unknown date"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return value
 
 
-def _parse_job_date(job: dict):
-    """Парсит дату из разных полей (ISO / RFC / ms)."""
-    # ISO формат
-    for key in ("posted_at", "published_at"):
-        v = job.get(key)
-        if v:
-            try:
-                return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-            except Exception:
-                pass
+def filter_jobs(
+    jobs: list[Job],
+    selected_role: str,
+    date_range_days: int,
+) -> list[dict]:
+    result: list[dict] = []
 
-    # RFC 2822 (RSS pubDate)
-    v = job.get("posted_at_rfc")
-    if v:
+    for job in jobs:
+        detected_role = classify_role(job)
+        if detected_role != selected_role:
+            continue
+
+        if not matches_date(job, date_range_days):
+            continue
+
+        result.append(
+            {
+                "title": job.title,
+                "company": job.company,
+                "location": job.location,
+                "url": job.url,
+                "posted_at": job.posted_at,
+                "posted_at_human": humanize_date(job.posted_at),
+                "description": job.description,
+                "employment_type": job.employment_type,
+                "salary": job.salary,
+                "source": job.source,
+                "detected_role": detected_role,
+            }
+        )
+
+    return dedupe_and_sort(result)
+
+
+def dedupe_and_sort(jobs: list[dict]) -> list[dict]:
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict] = []
+
+    for job in jobs:
+        key = (
+            (job.get("url") or "").strip().lower(),
+            (job.get("title") or "").strip().lower(),
+            (job.get("company") or "").strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(job)
+
+    def parse_dt(value: str):
         try:
-            return parsedate_to_datetime(v)
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except Exception:
-            pass
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-    # ms epoch
-    v = job.get("posted_at_ms")
-    if v:
-        try:
-            return datetime.fromtimestamp(int(v) / 1000, tz=timezone.utc)
-        except Exception:
-            pass
-
-    return None
-
-
-def _sort_date_key(job: dict):
-    dt = _parse_job_date(job)
-    return dt or datetime.min.replace(tzinfo=timezone.utc)
+    return sorted(unique, key=lambda x: parse_dt(x.get("posted_at", "")), reverse=True)
