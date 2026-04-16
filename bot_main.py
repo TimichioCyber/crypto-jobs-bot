@@ -9,9 +9,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import json
 from datetime import datetime
-from parsers.cryptojobs import parse_cryptojobs
-from parsers.angellist import parse_angellist
-from parsers.greenhouse import parse_greenhouse
+from parsers_cryptojobs import parse_cryptojobs
+from parsers_angellist import parse_angellist
+from parsers_greenhouse import parse_greenhouse
 from filters import apply_filters, get_user_preferences
 
 # Настройка логирования
