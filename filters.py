@@ -1,144 +1,85 @@
-"""
-Логика фильтрации вакансий по предпочтениям пользователя
-"""
+from typing import Iterable
 
-import re
-import logging
 
-logger = logging.getLogger(__name__)
-
-# Ключевые слова для определения должности
 POSITION_KEYWORDS = {
-    'developer': [
-        'developer', 'engineer', 'backend', 'frontend', 'fullstack', 'solidity',
-        'rust', 'golang', 'python', 'javascript', 'typescript', 'devops', 'blockchain'
+    "developer": [
+        "engineer", "developer", "backend", "frontend", "full stack", "fullstack",
+        "python", "rust", "solidity", "devops", "sre", "data engineer",
     ],
-    'designer': [
-        'designer', 'ux', 'ui', 'graphic', 'product designer', 'design'
+    "designer": [
+        "designer", "product design", "ux", "ui", "brand designer",
     ],
-    'content': [
-        'content', 'writer', 'copywriter', 'creator', 'blogger', 'social', 'media'
+    "content": [
+        "content", "writer", "copywriter", "editor", "social", "research analyst",
     ],
-    'marketing': [
-        'marketing', 'growth', 'campaign', 'digital', 'brand', 'seo', 'sm'
+    "marketing": [
+        "marketing", "growth", "seo", "performance marketing", "brand marketing",
     ],
-    'product': [
-        'product manager', 'pm', 'product lead', 'product owner'
+    "product": [
+        "product manager", "product", "pm",
     ],
-    'hr': [
-        'hr', 'human resources', 'recruiter', 'recruitment', 'talent'
+    "hr": [
+        "recruiter", "talent", "human resources", "hr", "people operations",
     ],
-    'community': [
-        'community', 'moderator', 'ambassador', 'community manager'
+    "community": [
+        "community", "community manager", "moderation", "advocacy", "ambassador",
     ],
-    'trader': [
-        'trader', 'trading', 'analyst', 'quantitative', 'quant'
+    "trader": [
+        "trader", "trading", "quant", "analyst", "portfolio", "market maker",
     ],
 }
 
-def apply_filters(jobs: list, user_prefs: dict) -> list:
-    """
-    Фильтрует вакансии по предпочтениям пользователя
 
-    Args:
-        jobs: Список вакансий
-        user_prefs: Словарь с предпочтениями {positions, formats, min_salary, countries}
+def matches_position(title: str, selected_positions: Iterable[str]) -> bool:
+    title_l = title.lower()
 
-    Returns:
-        Отфильтрованный список вакансий
-    """
+    for position in selected_positions:
+        keywords = POSITION_KEYWORDS.get(position, [])
+        if any(keyword in title_l for keyword in keywords):
+            return True
+
+    return False
+
+
+def matches_format(job_format: str, selected_formats: set[str]) -> bool:
+    if not selected_formats:
+        return True
+
+    jf = (job_format or "").lower().replace("-", "_").replace(" ", "_")
+    return jf in selected_formats
+
+
+def apply_filters(jobs: list[dict], prefs: dict) -> list[dict]:
+    selected_positions = prefs.get("positions", set())
+    selected_formats = prefs.get("formats", set())
+
     filtered = []
 
     for job in jobs:
-        # Пропускаем если уже были отправлены (можно добавить дедупликацию позже)
+        title = job.get("title", "")
+        job_format = job.get("format", "")
 
-        # Фильтр по должности
-        if user_prefs.get('positions'):
-            if not matches_position(job.get('title', ''), user_prefs['positions']):
-                continue
+        if selected_positions and not matches_position(title, selected_positions):
+            continue
 
-        # Фильтр по формату работы
-        if user_prefs.get('formats'):
-            if not matches_format(job.get('format', ''), user_prefs['formats']):
-                continue
-
-        # Фильтр по зарплате (если указана минимальная)
-        if user_prefs.get('min_salary'):
-            if not matches_salary(job.get('salary', ''), user_prefs['min_salary']):
-                continue
-
-        # Фильтр по странам (если указаны)
-        if user_prefs.get('countries'):
-            if not matches_location(job.get('location', ''), user_prefs['countries']):
-                continue
+        if not matches_format(job_format, selected_formats):
+            continue
 
         filtered.append(job)
 
-    return filtered
+    # убираем дубли по url/title/company
+    seen = set()
+    unique_jobs = []
 
-def matches_position(title: str, positions: set) -> bool:
-    """Проверяет, соответствует ли вакансия выбранным должностям"""
-    title_lower = title.lower()
+    for job in filtered:
+        key = (
+            job.get("url", "").strip().lower(),
+            job.get("title", "").strip().lower(),
+            job.get("company", "").strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_jobs.append(job)
 
-    for position in positions:
-        keywords = POSITION_KEYWORDS.get(position, [])
-        for keyword in keywords:
-            if keyword in title_lower:
-                return True
-
-    return False
-
-def matches_format(job_format: str, formats: set) -> bool:
-    """Проверяет формат работы"""
-    format_lower = job_format.lower()
-
-    for fmt in formats:
-        if fmt in format_lower or format_normalize(fmt) in format_lower:
-            return True
-
-    return False
-
-def format_normalize(fmt: str) -> str:
-    """Нормализирует названия форматов"""
-    mapping = {
-        'full_time': 'full-time',
-        'part_time': 'part-time',
-        'freelance': 'freelance',
-        'internship': 'intern',
-    }
-    return mapping.get(fmt, fmt)
-
-def matches_salary(salary_str: str, min_salary: int) -> bool:
-    """Проверяет, достаточна ли зарплата"""
-    if not salary_str or salary_str == 'Не указана' or salary_str == 'N/A':
-        return True  # Если не указана, не фильтруем
-
-    # Ищем числа в строке
-    numbers = re.findall(r'\$?([\d,]+)', salary_str)
-
-    if numbers:
-        try:
-            # Берём первое найденное число
-            salary = int(numbers[0].replace(',', ''))
-            return salary >= min_salary
-        except ValueError:
-            return True
-
-    return True
-
-def matches_location(location: str, countries: set) -> bool:
-    """Проверяет локацию"""
-    if 'remote' in location.lower():
-        return True  # Remote подходит для всех
-
-    location_lower = location.lower()
-    for country in countries:
-        if country.lower() in location_lower:
-            return True
-
-    return False
-
-def get_user_preferences(user_id: int) -> dict:
-    """Получить предпочтения пользователя (заглушка)"""
-    # Позже это будет читать из БД
-    return {}
+    return unique_jobs
