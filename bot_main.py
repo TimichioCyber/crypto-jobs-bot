@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from html import escape
 
 from dotenv import load_dotenv
@@ -18,6 +18,7 @@ from filters import apply_filters
 from parsers_greenhouse import parse_greenhouse
 from parsers_lever import parse_lever
 from parsers_ashby import parse_ashby
+from parsers_smartrecruiters import parse_smartrecruiters
 
 load_dotenv()
 
@@ -32,12 +33,12 @@ user_preferences: dict[int, dict] = {}
 POSITIONS = {
     "developer": "Разработчик 👨‍💻",
     "designer": "Дизайнер 🎨",
-    "content": "Контент / Research ✍️",
+    "content": "Контент ✍️",
     "marketing": "Маркетинг 📣",
-    "product": "Product Manager 📦",
+    "product": "Product 📦",
     "hr": "HR 👥",
     "community": "Community 🌍",
-    "trader": "Trader / Analyst 📈",
+    "trader": "Trader / Research 📈",
 }
 
 FORMATS = {
@@ -51,6 +52,7 @@ SOURCES = {
     "greenhouse": "Greenhouse",
     "lever": "Lever",
     "ashby": "Ashby",
+    "smartrecruiters": "SmartRecruiters",
 }
 
 DATE_RANGES = {
@@ -314,6 +316,7 @@ def format_job_message(index: int, job: dict) -> str:
     source = escape(job.get("source", "N/A"))
     url = escape(job.get("url", ""))
     posted_at = escape(job.get("posted_at_human", "Не указана"))
+    detected_role = escape(job.get("detected_role", "unknown"))
 
     lines = [
         f"<b>{index}. {title}</b>",
@@ -322,6 +325,7 @@ def format_job_message(index: int, job: dict) -> str:
         f"💼 {job_format}",
         f"💰 {salary}",
         f"🕒 {posted_at}",
+        f"🏷 Роль: {detected_role}",
         f"🔎 Источник: {source}",
     ]
 
@@ -340,13 +344,15 @@ async def gather_jobs(selected_sources: set[str]) -> list[dict]:
         tasks.append(parse_lever())
     if "ashby" in selected_sources:
         tasks.append(parse_ashby())
+    if "smartrecruiters" in selected_sources:
+        tasks.append(parse_smartrecruiters())
 
     if not tasks:
         return []
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    jobs: list[dict] = []
+    jobs = []
     for result in results:
         if isinstance(result, Exception):
             logger.exception("Source parser failed: %s", result)
@@ -373,7 +379,7 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await query.edit_message_text(
         "🔎 Ищу вакансии...\n"
-        "⏳ Собираю данные из источников и фильтрую по датам."
+        "⏳ Собираю данные из источников и фильтрую более точно."
     )
 
     try:
@@ -420,7 +426,7 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env")
+        raise ValueError("TELEGRAM_BOT_TOKEN не найден")
 
     app = Application.builder().token(token).build()
 
