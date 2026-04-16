@@ -12,19 +12,10 @@ CREATE TABLE IF NOT EXISTS user_preferences (
 );
 """
 
-CREATE_COMPANIES_SQL = """
-CREATE TABLE IF NOT EXISTS user_companies (
-    user_id INTEGER NOT NULL,
-    board_token TEXT NOT NULL,
-    PRIMARY KEY (user_id, board_token)
-);
-"""
-
 
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(CREATE_USERS_SQL)
-        await db.execute(CREATE_COMPANIES_SQL)
         await db.commit()
 
 
@@ -50,20 +41,12 @@ async def get_user_preferences(user_id: int) -> dict:
         )
         prefs_row = await cursor.fetchone()
 
-        cursor = await db.execute(
-            "SELECT board_token FROM user_companies WHERE user_id = ? ORDER BY board_token",
-            (user_id,),
-        )
-        company_rows = await cursor.fetchall()
-
     role = prefs_row["role"] if prefs_row else None
     date_range = prefs_row["date_range"] if prefs_row else None
-    companies = {row["board_token"] for row in company_rows}
 
     return {
         "role": role,
         "date_range": date_range,
-        "companies": companies,
     }
 
 
@@ -90,52 +73,4 @@ async def set_date_range(user_id: int, date_range: str) -> None:
             """,
             (user_id, date_range),
         )
-        await db.commit()
-
-
-async def toggle_company(user_id: int, board_token: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            """
-            SELECT 1 FROM user_companies
-            WHERE user_id = ? AND board_token = ?
-            """,
-            (user_id, board_token),
-        )
-        existing = await cursor.fetchone()
-
-        if existing:
-            await db.execute(
-                """
-                DELETE FROM user_companies
-                WHERE user_id = ? AND board_token = ?
-                """,
-                (user_id, board_token),
-            )
-        else:
-            await db.execute(
-                """
-                INSERT INTO user_companies (user_id, board_token)
-                VALUES (?, ?)
-                """,
-                (user_id, board_token),
-            )
-
-        await db.commit()
-
-
-async def set_default_companies_if_empty(user_id: int, board_tokens: list[str]) -> None:
-    prefs = await get_user_preferences(user_id)
-    if prefs["companies"]:
-        return
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        for token in board_tokens:
-            await db.execute(
-                """
-                INSERT OR IGNORE INTO user_companies (user_id, board_token)
-                VALUES (?, ?)
-                """,
-                (user_id, token),
-            )
         await db.commit()
