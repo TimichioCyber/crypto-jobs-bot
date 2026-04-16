@@ -15,6 +15,7 @@ LEVER_COMPANIES = {
     "anchorage": "Anchorage Digital",
     "bitgo": "BitGo",
     "polygon": "Polygon",
+    "avaxfoundation": "Avalanche",
 }
 
 API_URL = "https://api.lever.co/v0/postings/{company}?mode=json"
