@@ -1,5 +1,5 @@
 """
-Crypto Jobs Telegram Bot — FINAL
+Crypto Jobs Telegram Bot — FINAL (FIXED)
 Парсит крипто-вакансии с ATS (Greenhouse/Lever/Ashby/SmartRecruiters) + CryptoJobs + AngelList.
 SQLite для хранения фильтров и отправленных вакансий (дедуп).
 Фоновый цикл через asyncio (без job_queue extra).
@@ -85,7 +85,7 @@ def db_init():
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             prefs TEXT NOT NULL,
-            active INTEGER DEFAULT 1,
+            active INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
         )
     """)
@@ -119,6 +119,7 @@ def db_get_prefs(user_id: int) -> dict:
 
 
 def db_save_prefs(user_id: int, prefs: dict):
+    """Сохраняет фильтры. НЕ трогает поле active!"""
     payload = {
         "positions": list(prefs.get("positions", [])),
         "formats": list(prefs.get("formats", [])),
@@ -126,11 +127,19 @@ def db_save_prefs(user_id: int, prefs: dict):
     }
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("""
-        INSERT INTO users (user_id, prefs, active, created_at)
-        VALUES (?, ?, 1, ?)
-        ON CONFLICT(user_id) DO UPDATE SET prefs = excluded.prefs
-    """, (user_id, json.dumps(payload), datetime.now(timezone.utc).isoformat()))
+    # Проверяем существует ли юзер
+    c.execute("SELECT active FROM users WHERE user_id = ?", (user_id,))
+    existing = c.fetchone()
+
+    if existing:
+        # Если есть — только обновляем prefs, active не трогаем
+        c.execute("UPDATE users SET prefs = ? WHERE user_id = ?", (json.dumps(payload), user_id))
+    else:
+        # Если нет — создаём с active = 0 (не активен пока не нажмёт "Начать поиск")
+        c.execute(
+            "INSERT INTO users (user_id, prefs, active, created_at) VALUES (?, ?, 0, ?)",
+            (user_id, json.dumps(payload), datetime.now(timezone.utc).isoformat())
+        )
     conn.commit()
     conn.close()
 
@@ -213,7 +222,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     prefs = db_get_prefs(user_id)
     db_save_prefs(user_id, prefs)
-    # НЕ активируем здесь! Активация только при "Начать поиск"
+    # НЕ устанавливаем active = True! Только при "Начать поиск"
     logger.info(f"User {user_id} /start")
 
     await update.message.reply_text(
@@ -309,7 +318,7 @@ async def cb_go_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⚠️ Выбери хотя бы одну должность! /start")
         return
 
-    db_set_active(user_id, True)
+    db_set_active(user_id, True)  # Активируем ТОЛЬКО ТУТ
     logger.info(f"User {user_id} search start: {prefs}")
 
     await q.edit_message_text(
@@ -447,12 +456,12 @@ async def search_for_user(app: Application, user_id: int):
     try:
         prefs = db_get_prefs(user_id)
         if not prefs["positions"]:
-            logger.debug(f"search_for_user u{user_id}: skip (no positions)")
+            logger.debug(f"u{user_id}: skip (no positions)")
             return
 
         jobs = await fetch_all_jobs()
         filtered = apply_filters(jobs, prefs)
-        logger.info(f"search_for_user u{user_id}: {len(jobs)} total → {len(filtered)} filtered | positions={list(prefs['positions'])}")
+        logger.info(f"u{user_id}: {len(jobs)} total → {len(filtered)} filtered | pos={list(prefs['positions'])}")
 
         # Убираем уже отправленные
         new_jobs = [j for j in filtered if not db_is_sent(user_id, j.get("url", ""))]
