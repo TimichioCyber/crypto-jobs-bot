@@ -1,9 +1,10 @@
 """
-Crypto Jobs Telegram Bot — SIMPLIFIED VERSION
+Crypto Jobs Telegram Bot — WITH REAL SEARCH
 """
 
 import logging
 import os
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -124,10 +125,74 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.edit_message_text("⚠️ Выбери хотя бы одну должность!")
         return
     
-    await query.edit_message_text("🔍 Начинаю поиск вакансий!\nРезультаты будут по мере поиска.")
+    await query.edit_message_text("🔍 Ищу вакансии...\n⏳ Подожди немного...")
+    
+    try:
+        jobs = []
+        
+        # Парсим источники
+        logger.info(f"Parsing CryptoJobs for user {user_id}")
+        try:
+            cj_jobs = await parse_cryptojobs()
+            jobs.extend(cj_jobs)
+            logger.info(f"Got {len(cj_jobs)} from CryptoJobs")
+        except Exception as e:
+            logger.error(f"CryptoJobs error: {e}")
+        
+        logger.info(f"Parsing AngelList for user {user_id}")
+        try:
+            al_jobs = await parse_angellist()
+            jobs.extend(al_jobs)
+            logger.info(f"Got {len(al_jobs)} from AngelList")
+        except Exception as e:
+            logger.error(f"AngelList error: {e}")
+        
+        logger.info(f"Parsing Greenhouse for user {user_id}")
+        try:
+            gh_jobs = await parse_greenhouse()
+            jobs.extend(gh_jobs)
+            logger.info(f"Got {len(gh_jobs)} from Greenhouse")
+        except Exception as e:
+            logger.error(f"Greenhouse error: {e}")
+        
+        logger.info(f"Total jobs before filtering: {len(jobs)}")
+        
+        # Фильтруем
+        filtered_jobs = apply_filters(jobs, user_preferences.get(user_id, {}))
+        logger.info(f"Jobs after filtering: {len(filtered_jobs)}")
+        
+        if not filtered_jobs:
+            await context.bot.send_message(user_id, "😴 К сожалению, вакансий не найдено по твоим критериям.")
+            return
+        
+        # Отправляем результаты
+        await context.bot.send_message(user_id, f"✅ Найдено {len(filtered_jobs[:10])} вакансий:\n")
+        
+        for i, job in enumerate(filtered_jobs[:10], 1):
+            try:
+                message = f"""
+<b>{i}. {job.get('title', 'N/A')}</b>
+🏢 {job.get('company', 'N/A')}
+
+💰 {job.get('salary', 'Не указана')}
+📍 {job.get('location', 'N/A')}
+💼 {job.get('format', 'N/A')}
+
+<a href="{job.get('url', '#')}">Ссылка на вакансию →</a>
+"""
+                await context.bot.send_message(user_id, message, parse_mode='HTML')
+                await asyncio.sleep(0.5)  # Чтобы Telegram не заблокировал
+            except Exception as e:
+                logger.error(f"Error sending job {i}: {e}")
+        
+        logger.info(f"Sent {min(10, len(filtered_jobs))} vacancies to user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        await context.bot.send_message(user_id, f"❌ Ошибка при поиске: {str(e)}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("🤖 Crypto Jobs Bot\n\n/start - Начать\n/help - Справка")
+    await update.message.reply_text("🤖 <b>Crypto Jobs Bot</b>\n\n/start - Начать\n/help - Справка", parse_mode='HTML')
 
 def main():
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
