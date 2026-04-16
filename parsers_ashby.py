@@ -11,6 +11,7 @@ ASHBY_ORGS = {
     "alchemy": "Alchemy",
     "moonpay": "MoonPay",
     "phantom": "Phantom",
+    "paradigm": "Paradigm",
 }
 
 API_URL = "https://jobs.ashbyhq.com/api/non-user-graphql?op=apiJobBoardWithTeams"
