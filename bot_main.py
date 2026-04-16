@@ -213,7 +213,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     prefs = db_get_prefs(user_id)
     db_save_prefs(user_id, prefs)
-    db_set_active(user_id, True)
+    # НЕ активируем здесь! Активация только при "Начать поиск"
     logger.info(f"User {user_id} /start")
 
     await update.message.reply_text(
@@ -447,10 +447,12 @@ async def search_for_user(app: Application, user_id: int):
     try:
         prefs = db_get_prefs(user_id)
         if not prefs["positions"]:
+            logger.debug(f"search_for_user u{user_id}: skip (no positions)")
             return
 
         jobs = await fetch_all_jobs()
         filtered = apply_filters(jobs, prefs)
+        logger.info(f"search_for_user u{user_id}: {len(jobs)} total → {len(filtered)} filtered | positions={list(prefs['positions'])}")
 
         # Убираем уже отправленные
         new_jobs = [j for j in filtered if not db_is_sent(user_id, j.get("url", ""))]
