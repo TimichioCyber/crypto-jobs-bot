@@ -1,50 +1,155 @@
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
 
 
-POSITION_KEYWORDS = {
-    "developer": [
-        "engineer", "developer", "backend", "frontend", "full stack", "fullstack",
-        "software", "python", "rust", "solidity", "devops", "sre", "platform",
-        "data engineer", "infrastructure",
-    ],
-    "designer": [
-        "designer", "ux", "ui", "product design", "brand designer", "visual designer",
-    ],
-    "content": [
-        "content", "writer", "copywriter", "editor", "research", "analyst",
-        "content strategist", "social media",
-    ],
-    "marketing": [
-        "marketing", "growth", "brand", "seo", "crm", "performance marketing",
-        "demand generation",
-    ],
-    "product": [
-        "product manager", "product", "pm", "product lead",
-    ],
-    "hr": [
-        "recruiter", "talent", "hr", "human resources", "people ops", "people operations",
-    ],
-    "community": [
-        "community", "community manager", "moderation", "advocacy", "ecosystem",
-        "developer relations", "devrel", "partnerships",
-    ],
-    "trader": [
-        "trader", "trading", "quant", "research analyst", "market analyst",
-        "portfolio", "investment analyst",
-    ],
+ROLE_RULES = {
+    "software_engineering": {
+        "include": [
+            "software engineer", "backend engineer", "frontend engineer", "full stack",
+            "fullstack", "developer", "protocol engineer", "blockchain engineer",
+            "solidity", "rust engineer", "python engineer", "data engineer",
+            "platform engineer", "infrastructure engineer", "devops", "site reliability",
+            "sre", "mobile engineer", "security engineer"
+        ],
+        "exclude": [
+            "sales engineer", "support engineer"
+        ],
+    },
+    "research_analyst": {
+        "include": [
+            "research analyst", "market analyst", "investment analyst",
+            "crypto analyst", "researcher", "onchain analyst", "fundamental analyst",
+            "market intelligence", "research"
+        ],
+        "exclude": [
+            "transaction monitoring", "audit", "internal audit", "compliance",
+            "fraud", "trust & safety", "risk analyst", "kyc", "aml",
+            "operations analyst", "business analyst", "data analyst"
+        ],
+    },
+    "trading": {
+        "include": [
+            "trader", "quant trader", "quantitative trader", "market maker",
+            "execution trader", "options trader", "trading"
+        ],
+        "exclude": [],
+    },
+    "compliance_risk": {
+        "include": [
+            "compliance", "aml", "kyc", "risk analyst", "fraud analyst",
+            "transaction monitoring", "internal audit", "audit analyst",
+            "trust & safety", "investigations", "sanctions", "financial crime",
+            "fraud", "risk", "compliance analyst"
+        ],
+        "exclude": [],
+    },
+    "data_analyst": {
+        "include": [
+            "data analyst", "business analyst", "bi analyst", "analytics engineer",
+            "business intelligence", "data analytics"
+        ],
+        "exclude": [
+            "research analyst", "investment analyst", "market analyst", "crypto analyst"
+        ],
+    },
+    "product": {
+        "include": [
+            "product manager", "product lead", "group product manager",
+            "senior product manager", "principal product manager", "product owner"
+        ],
+        "exclude": [
+            "product designer", "product marketing"
+        ],
+    },
+    "design": {
+        "include": [
+            "product designer", "ux designer", "ui designer", "visual designer",
+            "brand designer", "ux researcher", "staff ux researcher", "design"
+        ],
+        "exclude": [],
+    },
+    "marketing_growth": {
+        "include": [
+            "marketing", "growth", "brand", "seo", "crm", "lifecycle",
+            "performance marketing", "paid media", "demand generation"
+        ],
+        "exclude": [],
+    },
+    "content_research": {
+        "include": [
+            "content", "copywriter", "writer", "editor", "social media",
+            "content strategist", "content manager"
+        ],
+        "exclude": [],
+    },
+    "community_devrel": {
+        "include": [
+            "community", "community manager", "developer relations", "devrel",
+            "ecosystem", "partnerships", "advocate", "ambassador"
+        ],
+        "exclude": [],
+    },
+    "recruiting_hr": {
+        "include": [
+            "recruiter", "talent", "human resources", "people operations",
+            "people partner", "hr", "talent acquisition"
+        ],
+        "exclude": [],
+    },
 }
 
 
-def matches_position(title: str, selected_positions: Iterable[str]) -> bool:
-    title_l = (title or "").lower()
+USER_BUCKETS = {
+    "developer": {"software_engineering"},
+    "designer": {"design"},
+    "content": {"content_research"},
+    "marketing": {"marketing_growth"},
+    "product": {"product"},
+    "hr": {"recruiting_hr"},
+    "community": {"community_devrel"},
+    "trader": {"trading", "research_analyst"},
+}
 
+
+def classify_role(text: str) -> str | None:
+    t = f" {(text or '').lower().strip()} "
+    best_role = None
+    best_score = 0
+
+    for role, rules in ROLE_RULES.items():
+        score = 0
+
+        for word in rules["include"]:
+            if word in t:
+                score += 3 if " " in word else 1
+
+        for word in rules["exclude"]:
+            if word in t:
+                score -= 4
+
+        if score > best_score:
+            best_score = score
+            best_role = role
+
+    return best_role if best_score > 0 else None
+
+
+def matches_position(job: dict, selected_positions) -> bool:
+    title = job.get("title", "")
+    description = job.get("description", "")
+    company = job.get("company", "")
+    combined = f"{title} {description} {company}"
+
+    role = classify_role(combined)
+    job["detected_role"] = role or "unknown"
+
+    if not role:
+        return False
+
+    allowed_roles = set()
     for position in selected_positions:
-        keywords = POSITION_KEYWORDS.get(position, [])
-        if any(keyword in title_l for keyword in keywords):
-            return True
+        allowed_roles.update(USER_BUCKETS.get(position, set()))
 
-    return False
+    return role in allowed_roles
 
 
 def matches_format(job_format: str, selected_formats: set[str]) -> bool:
@@ -102,12 +207,11 @@ def apply_filters(jobs: list[dict], prefs: dict) -> list[dict]:
     result = []
 
     for job in jobs:
-        title = job.get("title", "")
         job_format = job.get("format", "")
         source = job.get("source", "").lower()
         posted_at = job.get("posted_at", "")
 
-        if selected_positions and not matches_position(title, selected_positions):
+        if selected_positions and not matches_position(job, selected_positions):
             continue
 
         if not matches_format(job_format, selected_formats):
