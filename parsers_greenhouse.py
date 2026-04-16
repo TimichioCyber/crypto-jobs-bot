@@ -1,93 +1,93 @@
+"""
+Greenhouse ATS parser — тянет вакансии через публичный JSON API.
+Каждая компания на Greenhouse имеет endpoint: https://boards-api.greenhouse.io/v1/boards/{slug}/jobs
+"""
 import asyncio
 import logging
-from typing import Any
-
+from datetime import datetime, timezone
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
-GREENHOUSE_BOARDS = {
-    "coinbase": "Coinbase",
-    "kraken": "Kraken",
-    "chainalysis": "Chainalysis",
-    "aave": "Aave",
-    "opensea": "OpenSea",
-    "alchemy": "Alchemy",
-    "consensys": "Consensys",
-    "figure": "Figure",
-}
+# Список крипто-компаний на Greenhouse (slug на boards.greenhouse.io)
+COMPANIES = [
+    ("Coinbase", "coinbase"),
+    ("Kraken", "kraken"),
+    ("OpenSea", "opensea"),
+    ("Circle", "circle"),
+    ("Consensys", "consensys"),
+    ("Fireblocks", "fireblocks"),
+    ("Gemini", "gemini"),
+    ("Ripple", "ripple"),
+    ("Blockchain.com", "blockchain"),
+    ("Paradigm", "paradigm1"),
+    ("Offchain Labs", "offchainlabs"),
+    ("Uniswap Labs", "uniswaplabs"),
+    ("Alchemy", "alchemy"),
+    ("Anchorage", "anchorage"),
+    ("dYdX", "dydxtrading"),
+]
 
-API_URL = "https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
-
-
-def extract_location(job: dict[str, Any]) -> str:
-    loc = job.get("location") or {}
-    return loc.get("name") or "Remote / Not specified"
-
-
-def detect_format(title: str, content: str = "") -> str:
-    text = f"{title} {content}".lower()
-    if any(x in text for x in ["intern", "internship", "стаж"]):
-        return "internship"
-    if any(x in text for x in ["contract", "freelance", "contractor"]):
-        return "freelance"
-    if any(x in text for x in ["part-time", "part time"]):
-        return "part_time"
-    return "full_time"
+TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
-async def fetch_board(session: aiohttp.ClientSession, board: str, company: str) -> list[dict]:
-    url = API_URL.format(board=board)
-
+async def _fetch_company(session: aiohttp.ClientSession, name: str, slug: str) -> list[dict]:
+    url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            text_preview = await resp.text()
-            logger.info("Greenhouse %s status=%s", board, resp.status)
-
+        async with session.get(url) as resp:
             if resp.status != 200:
-                logger.warning("Greenhouse %s bad response: %s", board, text_preview[:200])
+                logger.warning(f"Greenhouse {name}: HTTP {resp.status}")
                 return []
-
-            data = await resp.json(content_type=None)
-            jobs = []
-
-            for job in data.get("jobs", []):
-                title = (job.get("title") or "").strip()
-                content = (job.get("content") or "")[:1000]
-
-                jobs.append(
-                    {
-                        "title": title,
-                        "company": company,
-                        "location": extract_location(job),
-                        "salary": "Не указана",
-                        "format": detect_format(title, content),
-                        "source": "greenhouse",
-                        "url": job.get("absolute_url", ""),
-                        "description": content,
-                        "posted_at": job.get("updated_at") or "",
-                    }
-                )
-
-            return jobs
-
+            data = await resp.json()
     except Exception as e:
-        logger.warning("Greenhouse parser failed for %s: %s", board, e)
+        logger.warning(f"Greenhouse {name}: {e}")
         return []
+
+    jobs = []
+    for item in data.get("jobs", []):
+        try:
+            title = item.get("title", "")
+            location = (item.get("location") or {}).get("name", "Remote")
+            job_url = item.get("absolute_url", "")
+            updated = item.get("updated_at") or item.get("first_published")
+            content = (item.get("content") or "")[:400].replace("\n", " ").strip()
+
+            jobs.append({
+                "title": title,
+                "company": name,
+                "location": location,
+                "format": _guess_format(title, location),
+                "salary": "Не указана",
+                "description": content,
+                "url": job_url,
+                "source": "Greenhouse",
+                "posted_at": updated,
+            })
+        except Exception as e:
+            logger.debug(f"Greenhouse parse item fail: {e}")
+    return jobs
+
+
+def _guess_format(title: str, location: str) -> str:
+    t = (title + " " + location).lower()
+    if "intern" in t:
+        return "Стажировка"
+    if "contract" in t or "freelance" in t:
+        return "Фриланс"
+    if "part-time" in t or "part time" in t:
+        return "Part-time"
+    if "remote" in t:
+        return "Remote / Full-time"
+    return "Full-time"
 
 
 async def parse_greenhouse() -> list[dict]:
-    connector = aiohttp.TCPConnector(ssl=False)
-    headers = {"User-Agent": "Mozilla/5.0 (CryptoJobsBot/2.0)"}
-
-    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-        tasks = [
-            fetch_board(session, board, company)
-            for board, company in GREENHOUSE_BOARDS.items()
-        ]
-        results = await asyncio.gather(*tasks)
-
-    jobs = []
-    for part in results:
-        jobs.extend(part)
-    return jobs
+    all_jobs: list[dict] = []
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        tasks = [_fetch_company(session, name, slug) for name, slug in COMPANIES]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, list):
+                all_jobs.extend(r)
+    logger.info(f"Greenhouse: total {len(all_jobs)} jobs")
+    return all_jobs

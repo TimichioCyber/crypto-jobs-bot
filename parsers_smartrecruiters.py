@@ -1,103 +1,91 @@
+"""
+SmartRecruiters ATS parser — публичный API.
+https://api.smartrecruiters.com/v1/companies/{slug}/postings
+"""
 import asyncio
 import logging
-
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
-SMARTRECRUITERS_COMPANIES = {
-    "CoinMarketCap": "CoinMarketCap",
-    "Ledger": "Ledger",
-    "Ripple": "Ripple",
-}
+COMPANIES = [
+    # Известные крипто-компании на SmartRecruiters — если у компании не публичный портал, вернётся 404, просто пропустим
+    ("Binance", "Binance"),
+    ("OKX", "OKX"),
+    ("Bybit", "Bybit"),
+]
 
-API_URL = "https://api.smartrecruiters.com/v1/companies/{company}/postings"
-
-
-def detect_format(job: dict) -> str:
-    employment_type = (job.get("typeOfEmployment") or "").lower()
-    name = (job.get("name") or "").lower()
-
-    text = f"{employment_type} {name}"
-
-    if "intern" in text:
-        return "internship"
-    if "contract" in text or "freelance" in text:
-        return "freelance"
-    if "part-time" in text or "part time" in text:
-        return "part_time"
-    return "full_time"
+TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
-def extract_location(job: dict) -> str:
-    location = job.get("location") or {}
-    city = location.get("city") or ""
-    region = location.get("region") or ""
-    country = location.get("country") or ""
-    remote = location.get("remote") or False
-
-    parts = [x for x in [city, region, country] if x]
-
-    if remote and parts:
-        return f"Remote / {', '.join(parts)}"
-    if remote:
-        return "Remote"
-    if parts:
-        return ", ".join(parts)
-    return "Remote / Not specified"
-
-
-async def fetch_company(session: aiohttp.ClientSession, company_id: str, company_name: str) -> list[dict]:
-    url = API_URL.format(company=company_id)
-
+async def _fetch_company(session: aiohttp.ClientSession, name: str, slug: str) -> list[dict]:
+    url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100"
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            text_preview = await resp.text()
-            logger.info("SmartRecruiters %s status=%s", company_id, resp.status)
-
+        async with session.get(url) as resp:
             if resp.status != 200:
-                logger.warning("SmartRecruiters %s bad response: %s", company_id, text_preview[:200])
+                logger.warning(f"SmartRecruiters {name}: HTTP {resp.status}")
                 return []
-
-            data = await resp.json(content_type=None)
-            content = data.get("content", [])
-            jobs = []
-
-            for job in content:
-                jobs.append(
-                    {
-                        "title": (job.get("name") or "").strip(),
-                        "company": company_name,
-                        "location": extract_location(job),
-                        "salary": "Не указана",
-                        "format": detect_format(job),
-                        "source": "smartrecruiters",
-                        "url": job.get("ref", "") or job.get("jobAd", {}).get("sections", [{}])[0].get("text", ""),
-                        "description": "",
-                        "posted_at": job.get("releasedDate") or "",
-                    }
-                )
-
-            return jobs
-
+            data = await resp.json()
     except Exception as e:
-        logger.warning("SmartRecruiters parser failed for %s: %s", company_id, e)
+        logger.warning(f"SmartRecruiters {name}: {e}")
         return []
+
+    jobs = []
+    for item in data.get("content", []):
+        try:
+            title = item.get("name", "")
+            loc = item.get("location") or {}
+            location = f"{loc.get('city', '')}, {loc.get('country', '')}".strip(", ") or "Remote"
+            emp_type = ((item.get("typeOfEmployment") or {}).get("label")) or "Full-time"
+            job_url = (item.get("ref") or "").replace("/postings/", f"https://jobs.smartrecruiters.com/{slug}/")
+            if not job_url:
+                job_url = f"https://jobs.smartrecruiters.com/{slug}/{item.get('id', '')}"
+            desc_obj = item.get("jobAd", {}).get("sections", {}) or {}
+            desc = ""
+            for key in ("companyDescription", "jobDescription", "qualifications"):
+                v = (desc_obj.get(key) or {}).get("text", "")
+                if v:
+                    desc = v
+                    break
+            desc = desc[:400].replace("\n", " ")
+
+            jobs.append({
+                "title": title,
+                "company": name,
+                "location": location,
+                "format": _fmt(emp_type, title, location),
+                "salary": "Не указана",
+                "description": desc,
+                "url": job_url,
+                "source": "SmartRecruiters",
+                "posted_at": item.get("releasedDate"),
+            })
+        except Exception as e:
+            logger.debug(f"SmartRecruiters parse item fail: {e}")
+    return jobs
+
+
+def _fmt(emp_type: str, title: str, location: str) -> str:
+    et = (emp_type or "").lower()
+    t = (title + " " + location).lower()
+    if "intern" in et or "intern" in t:
+        return "Стажировка"
+    if "part" in et:
+        return "Part-time"
+    if "contract" in et or "freelance" in et:
+        return "Фриланс"
+    if "remote" in t:
+        return "Remote / Full-time"
+    return "Full-time"
 
 
 async def parse_smartrecruiters() -> list[dict]:
-    connector = aiohttp.TCPConnector(ssl=False)
-    headers = {"User-Agent": "Mozilla/5.0 (CryptoJobsBot/2.0)"}
-
-    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-        tasks = [
-            fetch_company(session, company_id, company_name)
-            for company_id, company_name in SMARTRECRUITERS_COMPANIES.items()
-        ]
-        results = await asyncio.gather(*tasks)
-
-    jobs = []
-    for part in results:
-        jobs.extend(part)
-
-    return jobs
+    all_jobs: list[dict] = []
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        tasks = [_fetch_company(session, name, slug) for name, slug in COMPANIES]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, list):
+                all_jobs.extend(r)
+    logger.info(f"SmartRecruiters: total {len(all_jobs)} jobs")
+    return all_jobs

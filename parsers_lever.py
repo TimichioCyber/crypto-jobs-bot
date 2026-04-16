@@ -1,109 +1,91 @@
+"""
+Lever ATS parser — публичный JSON API: https://api.lever.co/v0/postings/{slug}
+"""
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Any
-
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
-LEVER_COMPANIES = {
-    "chainlinklabs": "Chainlink Labs",
-    "solanafoundation": "Solana Foundation",
-    "dfinity": "DFINITY",
-    "moonpay": "MoonPay",
-    "anchorage": "Anchorage Digital",
-    "bitgo": "BitGo",
-    "polygon": "Polygon",
-    "avaxfoundation": "Avalanche",
-}
+COMPANIES = [
+    ("Chainlink Labs", "chainlink"),
+    ("Solana Foundation", "solana"),
+    ("DFINITY", "dfinity"),
+    ("MoonPay", "moonpay"),
+    ("Anchorage Digital", "anchorage"),
+    ("BitGo", "bitgo"),
+    ("Polygon", "polygontechnology"),
+    ("Avalanche / Ava Labs", "avalabs"),
+    ("Aragon", "aragon"),
+    ("Mysten Labs", "mystenlabs"),
+    ("Immutable", "immutable"),
+    ("Matter Labs", "matterlabs"),
+]
 
-API_URL = "https://api.lever.co/v0/postings/{company}?mode=json"
-
-
-def extract_location(job: dict[str, Any]) -> str:
-    categories = job.get("categories") or {}
-    return categories.get("location") or "Remote / Not specified"
-
-
-def detect_format(job: dict[str, Any]) -> str:
-    categories = job.get("categories") or {}
-    commitment = (categories.get("commitment") or "").lower()
-    title = (job.get("text") or "").lower()
-
-    text = f"{commitment} {title}"
-
-    if "intern" in text:
-        return "internship"
-    if "contract" in text or "freelance" in text:
-        return "freelance"
-    if "part time" in text or "part-time" in text:
-        return "part_time"
-    return "full_time"
+TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
-def normalize_posted_at(created_at) -> str:
-    if not created_at:
-        return ""
-
+async def _fetch_company(session: aiohttp.ClientSession, name: str, slug: str) -> list[dict]:
+    url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
     try:
-        if isinstance(created_at, (int, float)):
-            return datetime.fromtimestamp(created_at / 1000, tz=timezone.utc).isoformat()
-        return str(created_at)
-    except Exception:
-        return ""
-
-
-async def fetch_company(session: aiohttp.ClientSession, company_slug: str, company_name: str) -> list[dict]:
-    url = API_URL.format(company=company_slug)
-
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            text_preview = await resp.text()
-            logger.info("Lever %s status=%s", company_slug, resp.status)
-
+        async with session.get(url) as resp:
             if resp.status != 200:
-                logger.warning("Lever %s bad response: %s", company_slug, text_preview[:200])
+                logger.warning(f"Lever {name}: HTTP {resp.status}")
                 return []
-
-            data = await resp.json(content_type=None)
-            jobs = []
-
-            for job in data:
-                jobs.append(
-                    {
-                        "title": (job.get("text") or "").strip(),
-                        "company": company_name,
-                        "location": extract_location(job),
-                        "salary": "Не указана",
-                        "format": detect_format(job),
-                        "source": "lever",
-                        "url": job.get("hostedUrl") or "",
-                        "description": "",
-                        "posted_at": normalize_posted_at(job.get("createdAt")),
-                    }
-                )
-
-            return jobs
-
+            data = await resp.json()
     except Exception as e:
-        logger.warning("Lever parser failed for %s: %s", company_slug, e)
+        logger.warning(f"Lever {name}: {e}")
         return []
+
+    jobs = []
+    for item in data:
+        try:
+            title = item.get("text", "")
+            cats = item.get("categories") or {}
+            location = cats.get("location", "Remote")
+            commitment = cats.get("commitment", "")
+            team = cats.get("team", "")
+            job_url = item.get("hostedUrl") or item.get("applyUrl") or ""
+            created = item.get("createdAt")  # ms epoch
+            desc = (item.get("descriptionPlain") or item.get("description") or "")[:400].replace("\n", " ")
+
+            jobs.append({
+                "title": title,
+                "company": name,
+                "location": location,
+                "format": _fmt(commitment, title, location),
+                "salary": "Не указана",
+                "description": f"{team}. {desc}".strip(" ."),
+                "url": job_url,
+                "source": "Lever",
+                "posted_at_ms": created,
+            })
+        except Exception as e:
+            logger.debug(f"Lever parse item fail: {e}")
+    return jobs
+
+
+def _fmt(commitment: str, title: str, location: str) -> str:
+    c = (commitment or "").lower()
+    t = (title + " " + location).lower()
+    if "intern" in c or "intern" in t:
+        return "Стажировка"
+    if "part" in c:
+        return "Part-time"
+    if "contract" in c or "freelance" in c:
+        return "Фриланс"
+    if "remote" in t:
+        return "Remote / Full-time"
+    return "Full-time"
 
 
 async def parse_lever() -> list[dict]:
-    connector = aiohttp.TCPConnector(ssl=False)
-    headers = {"User-Agent": "Mozilla/5.0 (CryptoJobsBot/2.0)"}
-
-    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-        tasks = [
-            fetch_company(session, slug, company)
-            for slug, company in LEVER_COMPANIES.items()
-        ]
-        results = await asyncio.gather(*tasks)
-
-    jobs = []
-    for part in results:
-        jobs.extend(part)
-
-    return jobs
+    all_jobs: list[dict] = []
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        tasks = [_fetch_company(session, name, slug) for name, slug in COMPANIES]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, list):
+                all_jobs.extend(r)
+    logger.info(f"Lever: total {len(all_jobs)} jobs")
+    return all_jobs

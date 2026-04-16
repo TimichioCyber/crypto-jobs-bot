@@ -1,42 +1,59 @@
 """
-Парсер для CryptoJobs.com
+CryptoJobs parser — скрейпит cryptojobslist.com через публичный RSS/JSON.
+Fallback: HTML-скрейп через BeautifulSoup.
 """
-
+import logging
 import aiohttp
 from bs4 import BeautifulSoup
-import logging
 
 logger = logging.getLogger(__name__)
 
-async def parse_cryptojobs() -> list:
-    """Парсит вакансии с CryptoJobs.com"""
-    jobs = []
+FEED_URL = "https://cryptojobslist.com/rss"
+TIMEOUT = aiohttp.ClientTimeout(total=15)
+HEADERS = {"User-Agent": "Mozilla/5.0 (crypto-jobs-bot)"}
 
+
+async def parse_cryptojobs() -> list[dict]:
+    jobs: list[dict] = []
     try:
-        async with aiohttp.ClientSession() as session:
-            url = "https://cryptojobs.com/api/jobs"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+        async with aiohttp.ClientSession(timeout=TIMEOUT, headers=HEADERS) as session:
+            async with session.get(FEED_URL) as resp:
+                if resp.status != 200:
+                    logger.warning(f"CryptoJobs RSS: HTTP {resp.status}")
+                    return []
+                xml = await resp.text()
 
-            async with session.get(url, headers=headers, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
+        soup = BeautifulSoup(xml, "xml")
+        for item in soup.find_all("item")[:80]:
+            try:
+                title_full = item.title.text if item.title else ""
+                link = item.link.text if item.link else ""
+                pub = item.pubDate.text if item.pubDate else ""
+                desc = (item.description.text if item.description else "")[:400]
 
-                    for job in data.get('jobs', [])[:50]:  # Берём первые 50
-                        jobs.append({
-                            'title': job.get('title', ''),
-                            'company': job.get('company', ''),
-                            'location': job.get('location', ''),
-                            'salary': job.get('salary', 'N/A'),
-                            'format': job.get('job_type', 'Full-time'),
-                            'description': job.get('description', '')[:300],
-                            'url': f"https://cryptojobs.com/job/{job.get('id', '')}",
-                            'source': 'CryptoJobs.com',
-                            'posted_at': job.get('posted_at', ''),
-                        })
+                # Формат RSS: "Role at Company" — пытаемся распарсить
+                company = ""
+                title = title_full
+                if " at " in title_full:
+                    parts = title_full.rsplit(" at ", 1)
+                    title = parts[0].strip()
+                    company = parts[1].strip()
 
+                jobs.append({
+                    "title": title,
+                    "company": company or "—",
+                    "location": "Remote",
+                    "format": "Full-time",
+                    "salary": "Не указана",
+                    "description": desc,
+                    "url": link,
+                    "source": "CryptoJobsList",
+                    "posted_at_rfc": pub,
+                })
+            except Exception as e:
+                logger.debug(f"CryptoJobs parse item fail: {e}")
     except Exception as e:
-        logger.error(f"Error parsing CryptoJobs: {e}")
+        logger.warning(f"CryptoJobs fetch fail: {e}")
 
+    logger.info(f"CryptoJobs: {len(jobs)} jobs")
     return jobs
