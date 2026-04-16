@@ -13,7 +13,6 @@ GREENHOUSE_BOARDS = {
     "aave": "Aave",
     "opensea": "OpenSea",
     "alchemy": "Alchemy",
-    "figure": "Figure",
     "consensys": "Consensys",
 }
 
@@ -63,7 +62,6 @@ async def fetch_board(session: aiohttp.ClientSession, board: str, company: str) 
                         "salary": "Не указана",
                         "format": detect_format(title, content),
                         "source": "greenhouse",
-                        "source_label": "Greenhouse",
                         "url": job.get("absolute_url", ""),
                         "description": content,
                         "posted_at": job.get("updated_at") or "",
