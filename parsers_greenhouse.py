@@ -14,6 +14,7 @@ GREENHOUSE_BOARDS = {
     "opensea": "OpenSea",
     "alchemy": "Alchemy",
     "consensys": "Consensys",
+    "figure": "Figure",
 }
 
 API_URL = "https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
